@@ -1,0 +1,1 @@
+SHOW GRANTS FOR 'moviebook_app'@'localhost';
