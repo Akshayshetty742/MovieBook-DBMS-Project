@@ -1,14 +1,23 @@
 
 import pool from "@/lib/db";
+import { getAuthenticatedUser } from "@/lib/auth";
 
 /**
  * GET /api/bookings
  *
  * Returns every booking joined with its show, movie, theatre, and booked seats.
  */
-export async function GET() {
+export async function GET(request) {
     try {
-        const [rows] = await pool.query(`
+        const user = await getAuthenticatedUser(request);
+        if (!user) {
+            return Response.json(
+                { success: false, error: "Sign in to view your bookings." },
+                { status: 401 }
+            );
+        }
+
+        const [rows] = await pool.execute(`
             SELECT
                 b.booking_id,
                 b.user_id,
@@ -16,7 +25,7 @@ export async function GET() {
                 b.booking_date,
                 b.total_amount,
                 b.booking_status,
-                s.show_date,
+                DATE_FORMAT(s.show_date, '%Y-%m-%d') AS show_date,
                 s.show_time,
                 s.price,
                 m.title  AS movie_title,
@@ -26,8 +35,9 @@ export async function GET() {
             JOIN movies  m  ON s.movie_id   = m.movie_id
             JOIN screens sc ON s.screen_id  = sc.screen_id
             JOIN theatres t ON sc.theatre_id = t.theatre_id
+            WHERE b.user_id = ?
             ORDER BY b.booking_id DESC
-        `);
+        `, [user.user_id]);
 
         // Gather seat labels for every booking in a single query
         const bookingIds = rows.map((r) => r.booking_id);
@@ -78,9 +88,19 @@ export async function GET() {
  * Prevents double-booking via SELECT ... FOR UPDATE + UNIQUE constraint.
  */
 export async function POST(request) {
-    const connection = await pool.getConnection();
+    let connection;
+    let transactionStarted = false;
 
     try {
+        const user = await getAuthenticatedUser(request);
+        if (!user) {
+            return Response.json(
+                { success: false, error: "Sign in before creating a booking." },
+                { status: 401 }
+            );
+        }
+
+        connection = await pool.getConnection();
         const { show_id, seat_ids } = await request.json();
 
         if (
@@ -98,28 +118,19 @@ export async function POST(request) {
         }
 
         await connection.beginTransaction();
-
-        // Use the first demo user
-        const [users] = await connection.query(
-            "SELECT user_id FROM users ORDER BY user_id LIMIT 1"
-        );
-
-        if (users.length === 0) {
-            await connection.rollback();
-            return Response.json(
-                { success: false, error: "Create a demo user before booking." },
-                { status: 400 }
-            );
-        }
+        transactionStarted = true;
 
         // Validate show existence and get its screen + price
         const [shows] = await connection.query(
-            "SELECT show_id, screen_id, price FROM shows WHERE show_id = ?",
+            `SELECT show_id, screen_id, price,
+                    (TIMESTAMP(show_date, show_time) > NOW()) AS is_future
+             FROM shows WHERE show_id = ?`,
             [Number(show_id)]
         );
 
         if (shows.length === 0) {
             await connection.rollback();
+            transactionStarted = false;
             return Response.json(
                 { success: false, error: "Show not found." },
                 { status: 404 }
@@ -127,6 +138,15 @@ export async function POST(request) {
         }
 
         const show = shows[0];
+        if (!Boolean(show.is_future)) {
+            await connection.rollback();
+            transactionStarted = false;
+            return Response.json(
+                { success: false, error: "This showtime has already passed and is no longer bookable." },
+                { status: 400 }
+            );
+        }
+
         const seatIds = seat_ids.map(Number);
 
         // Validate that every requested seat belongs to this screen
@@ -140,6 +160,7 @@ export async function POST(request) {
 
         if (seats.length !== seatIds.length) {
             await connection.rollback();
+            transactionStarted = false;
             return Response.json(
                 { success: false, error: "One or more seats do not belong to this screen." },
                 { status: 400 }
@@ -158,6 +179,7 @@ export async function POST(request) {
         if (alreadyBooked.length > 0) {
             const takenIds = alreadyBooked.map((r) => r.seat_id);
             await connection.rollback();
+            transactionStarted = false;
             return Response.json(
                 {
                     success: false,
@@ -174,7 +196,7 @@ export async function POST(request) {
         const [bookingResult] = await connection.query(
             `INSERT INTO bookings (user_id, show_id, total_amount, booking_status)
              VALUES (?, ?, ?, 'CONFIRMED')`,
-            [users[0].user_id, Number(show_id), total]
+            [user.user_id, Number(show_id), total]
         );
 
         // Insert one booking_seats row per selected seat
@@ -194,6 +216,7 @@ export async function POST(request) {
         );
 
         await connection.commit();
+        transactionStarted = false;
 
         return Response.json(
             {
@@ -211,8 +234,17 @@ export async function POST(request) {
             { status: 201 }
         );
     } catch (error) {
-        await connection.rollback();
-        console.error("Bookings POST failed:", error);
+        if (transactionStarted && connection) {
+            try {
+                await connection.rollback();
+            } catch (rollbackError) {
+                console.error(
+                    "Bookings POST rollback failed:",
+                    rollbackError.code || rollbackError.name
+                );
+            }
+        }
+        console.error("Bookings POST failed:", error.code || error.name);
 
         if (error.code === "ER_DUP_ENTRY") {
             return Response.json(
@@ -227,11 +259,11 @@ export async function POST(request) {
         return Response.json(
             {
                 success: false,
-                error: error.message || "Booking failed. Please try again.",
+                error: "Booking failed. Please try again.",
             },
             { status: 500 }
         );
     } finally {
-        connection.release();
+        if (connection) connection.release();
     }
 }

@@ -4,7 +4,7 @@
 
 ### 1. Core SQL Queries
 
-The following queries represent key operational and reporting requirements implemented and tested in the project (`movie_booking_project.sql`).
+The following queries illustrate key operational and reporting requirements. Related examples are included in `sql files/movie_booking_project.sql`; this list is documentation, not a claim that every query was rerun during the latest UI audit.
 
 #### 1.1 Basic Filtering & Sorting
 ```sql
@@ -136,11 +136,13 @@ FROM payments
 WHERE payment_status = 'SUCCESS'
 GROUP BY payment_method;
 ```
-*Purpose*: Provides financial reconciliation across different payment methods (`UPI`, `CARD`, `UPI (DEMO)`).
+*Purpose*: Provides financial reconciliation across the payment methods represented by the script and application (including `UPI`, `CARD`, `CASH`, and simulated UPI).
 
 ---
 
 ### 2. Transaction Demonstrations (ACID Properties)
+
+These are classroom SQL examples, not application registration flows. The sample `password_hash` values below are placeholders, not scrypt hashes; do not use these rows to test sign-in. The demonstration inserts are not safe to repeat unchanged because the sample emails may already exist.
 
 #### 2.1 Successful Transaction (COMMIT)
 ```sql

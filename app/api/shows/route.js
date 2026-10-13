@@ -10,8 +10,10 @@ export async function GET() {
                 m.genre,
                 m.language,
                 m.duration,
+                DATE_FORMAT(m.release_date, '%Y-%m-%d') AS release_date,
+                m.status AS movie_status,
                 t.theatre_name,
-                s.show_date,
+                DATE_FORMAT(s.show_date, '%Y-%m-%d') AS show_date,
                 s.show_time,
                 s.price
             FROM shows s

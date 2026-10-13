@@ -36,11 +36,13 @@ Traditional box-office ticket counters and primitive booking systems suffer from
 - Server-side price calculation and booking validation enforcing maximum 10 seats per booking.
 - ACID transaction execution committing records to `bookings`, `booking_seats`, and `payments` synchronously.
 - "My Bookings" persistent booking history retrieved with multi-table SQL joins.
+- Separate customer registration/login, expiring server-backed sessions, authenticated booking ownership, and a per-customer Watchlist.
+- Neo4j graph-based similar-movie recommendations and device-local recently viewed movie IDs.
 - Demonstration of SQL views, composite indexing, and database triggers.
 
 #### Out-of-Scope (College Project Simulation Boundaries):
 - Live banking/credit card payment gateway integration (simulated UPI/Card payment recording is implemented for academic evaluation).
-- User authentication via JWT/OAuth (default demo user context is utilized for seamless evaluator testing).
+- JWT/OAuth authentication and administrator/theatre-manager workflows. Customer login uses database-backed sessions and scrypt password hashes; there is no default authenticated demo-user context.
 - Real-time WebSockets / push notifications (polling and optimistic updates on refresh are utilized).
 
 ---
@@ -48,13 +50,15 @@ Traditional box-office ticket counters and primitive booking systems suffer from
 ### 5. Requirements Specification
 
 #### 5.1 Functional Requirements (FR)
-- **FR1: Movie Catalog Display**: The system must retrieve and display all movies with their title, genre, language, duration, release date, and rating.
+- **FR1: Movie Catalog Display**: The system retrieves and displays active movie metadata available in MySQL, including title, genre, language, duration, and release date. Ratings and synopsis text are not stored or shown.
 - **FR2: Show Scheduling Filter**: The system must allow users to view available shows filtered by the chosen movie, showing the theatre name, date, time, and ticket price.
 - **FR3: Live Seat Map Inspection**: When a show is chosen, the system must retrieve the screen's seat inventory and clearly mark seats as available or booked based on confirmed bookings.
 - **FR4: Interactive Seat Selection**: The user must be able to select and deselect up to 10 available seats, updating the total booking amount dynamically.
 - **FR5: Server-Side Booking Validation**: The server must verify that candidate seats belong to the selected show's screen and are not already booked under any confirmed booking.
 - **FR6: Atomic Transaction Processing**: Bookings must only succeed if records in `bookings`, `booking_seats`, and `payments` are committed together. Any error must trigger an immediate rollback.
 - **FR7: Persistent Booking History ("My Bookings")**: Confirmed bookings must be permanently stored in MySQL and displayed with joined movie, theatre, date, time, and seat details.
+- **FR8: Customer Authentication and Ownership**: Registration/login establish a server-validated, expiring session; private booking history and Watchlist operations are scoped to the authenticated customer.
+- **FR9: Movie Watchlist and Recommendations**: Signed-in customers can add, list, and remove saved movies; similar-movie suggestions are queried from Neo4j and may be unavailable when that service is offline.
 
 #### 5.2 Non-Functional Requirements (NFR)
 - **NFR1: Consistency & Atomicity**: The system must adhere strictly to ACID properties so that partial bookings are never persisted.

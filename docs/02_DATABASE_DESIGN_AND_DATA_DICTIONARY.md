@@ -4,7 +4,7 @@
 
 ### 1. Entity-Relationship (ER) Diagram
 
-The following Mermaid diagram illustrates the actual entities, attributes, primary keys, foreign keys, and cardinalities implemented in MySQL (`movie_booking_db`).
+The following Mermaid diagram describes the nine-table core relational model and the two additive authentication/Watchlist tables used by the application. The repository does **not** include a base `CREATE DATABASE`/`CREATE TABLE` script: `sql files/movie_booking_project.sql` assumes the core schema already exists and supplies sample data, queries, indexes, views, and a trigger. Create/verify the core tables before running it.
 
 ```mermaid
 erDiagram
@@ -13,6 +13,9 @@ erDiagram
     SCREENS ||--o{ SHOWS : "hosts"
     MOVIES ||--o{ SHOWS : "scheduled_in"
     USERS ||--o{ BOOKINGS : "places"
+    USERS ||--o{ USER_SESSIONS : "has"
+    USERS ||--o{ MOVIE_WATCHLIST : "saves"
+    MOVIES ||--o{ MOVIE_WATCHLIST : "saved_by"
     SHOWS ||--o{ BOOKINGS : "booked_for"
     BOOKINGS ||--|{ BOOKING_SEATS : "includes"
     SEATS ||--o{ BOOKING_SEATS : "reserved_in"
@@ -91,6 +94,20 @@ erDiagram
         varchar payment_status
         timestamp payment_date
     }
+
+    USER_SESSIONS {
+        bigint session_id PK
+        int user_id FK
+        char token_hash UK
+        datetime expires_at
+        timestamp created_at
+    }
+
+    MOVIE_WATCHLIST {
+        int user_id PK, FK
+        int movie_id PK, FK
+        timestamp created_at
+    }
 ```
 
 ---
@@ -116,6 +133,8 @@ erDiagram
   - Foreign Key: `seat_id` references `seats(seat_id)`
 - **payments** (<ins>payment_id</ins>, *booking_id*, amount, payment_method, payment_status, payment_date)
   - Foreign Key: `booking_id` references `bookings(booking_id)` (Unique constraint enforces 1-to-1 relationship)
+- **user_sessions** (<ins>session_id</ins>, *user_id*, token_hash, expires_at, created_at) — added by `sql files/11_add_user_sessions.sql`; only a SHA-256 hash of the random session token is stored.
+- **movie_watchlist** (*<ins>user_id</ins>*, *<ins>movie_id</ins>*, created_at) — added by `sql files/12_add_movie_watchlist.sql`; the composite primary key makes each user/movie pair unique.
 
 ---
 
@@ -203,12 +222,30 @@ erDiagram
 | `payment_status`| VARCHAR(20) | NO | MUL | NULL | Settlement state (`SUCCESS`, `FAILED`) |
 | `payment_date`| TIMESTAMP | YES | | CURRENT_TIMESTAMP | Payment settlement timestamp |
 
+#### 3.10 Table: `user_sessions` (additive migration)
+| Column Name | Data Type | Nullable | Key | Description |
+|---|---|---|---|---|
+| `session_id` | BIGINT UNSIGNED | NO | PRI | Auto-increment session row ID |
+| `user_id` | INT | NO | MUL, FK | Customer account owning the session |
+| `token_hash` | CHAR(64) | NO | UNI | SHA-256 hash of the opaque cookie token; raw token is not stored |
+| `expires_at` | DATETIME | NO | MUL | Session expiration checked in UTC |
+| `created_at` | TIMESTAMP | NO | | Session creation time |
+
+#### 3.11 Table: `movie_watchlist` (additive migration)
+| Column Name | Data Type | Nullable | Key | Description |
+|---|---|---|---|---|
+| `user_id` | INT | NO | PRI, FK | Authenticated customer |
+| `movie_id` | INT | NO | PRI, FK | Saved movie |
+| `created_at` | TIMESTAMP | NO | | Time the movie was saved |
+
+The two migrations above use `CREATE TABLE IF NOT EXISTS` and preserve existing records. Apply them separately after the core `users` and `movies` tables exist.
+
 ---
 
 ### 4. Keys, Constraints, Indexes & Advanced DB Objects
 
 #### 4.1 Primary & Foreign Keys
-- **Primary Keys**: Every table uses an auto-increment integer `PRIMARY KEY` to guarantee uniqueness and efficient B-Tree indexing.
+- **Primary Keys**: Core tables use the keys shown in their data-dictionary entries. `user_sessions.session_id` is `BIGINT UNSIGNED`; `movie_watchlist` uses the composite primary key `(user_id, movie_id)`.
 - **Foreign Keys with Referential Integrity**:
   - `screens.theatre_id` -> `theatres.theatre_id`
   - `seats.screen_id` -> `screens.screen_id`
@@ -220,24 +257,27 @@ erDiagram
   - `booking_seats.show_id` -> `shows.show_id`
   - `booking_seats.seat_id` -> `seats.seat_id`
   - `payments.booking_id` -> `bookings.booking_id` (with `UNIQUE` constraint)
+  - `user_sessions.user_id` -> `users.user_id`
+  - `movie_watchlist.user_id` -> `users.user_id`
+  - `movie_watchlist.movie_id` -> `movies.movie_id`
 
 #### 4.2 Composite & Secondary Indexes
-The database features dedicated indexes to accelerate lookups:
-1. `idx_movie_title` on `movies(title)`: Accelerates movie searching.
-2. `idx_show_movie` on `shows(movie_id)`: Speeds up finding shows for a movie.
-3. `idx_shows_date_time` on `shows(show_date, show_time)`: Optimizes schedule lookups.
-4. `uq_shows_screen_date_time` on `shows(screen_id, show_date, show_time)`: Prevents overlapping shows on the same screen at the same time.
-5. `idx_booking_user` on `bookings(user_id)`: Speeds up retrieving user order histories.
-6. `idx_booking_show` on `bookings(show_id)`: Quick retrieval of all bookings for a show.
-7. `idx_payment_status` on `payments(payment_status)`: Optimizes payment reconciliation queries.
+The core SQL file explicitly creates the following secondary indexes:
+1. `idx_movie_title` on `movies(title)`.
+2. `idx_show_movie` on `shows(movie_id)`.
+3. `idx_booking_user` on `bookings(user_id)`.
+4. `idx_booking_show` on `bookings(show_id)`.
+5. `idx_payment_status` on `payments(payment_status)`.
+
+`sql files/09_show_date_time_index.sql` separately creates `idx_shows_date_time` on `(show_date, show_time)`. It is not guarded by an existence check, so rerunning it can fail with a duplicate-index error. The repository does not define the previously claimed `uq_shows_screen_date_time` unique index.
 
 #### 4.3 Database Views
-Five views simplify complex multi-table joins for analytical reports:
+The core SQL file creates three views:
 1. **`movie_show_details`**: Joins `shows`, `movies`, `screens`, and `theatres` to provide a consolidated schedule with pricing and location.
 2. **`booking_summary`**: Joins `bookings`, `users`, `shows`, `movies`, `screens`, and `theatres` to produce complete customer order records.
 3. **`payment_report`**: Joins `payments`, `bookings`, `users`, `shows`, and `movies` to report monetary flows and payment instruments.
-4. **`booking_details`**: Provides detailed breakdown of individual booked seats joined with booking amounts.
-5. **`show_schedule`**: Displays chronologically ordered upcoming showtimes.
+
+No `booking_details` or `show_schedule` view definition is present in the checked-in SQL scripts.
 
 #### 4.4 Triggers & Stored Procedures
 - **Trigger `check_booking_amount`** (defined in `movie_booking_project.sql`):

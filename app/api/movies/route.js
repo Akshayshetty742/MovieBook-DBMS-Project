@@ -4,7 +4,9 @@ import pool from "@/lib/db";
 export async function GET() {
     try {
         const [rows] = await pool.query(
-            `SELECT movie_id, title, genre, language, duration, release_date, status
+            `SELECT movie_id, title, genre, language, duration,
+                    DATE_FORMAT(release_date, '%Y-%m-%d') AS release_date,
+                    status
              FROM movies
              ORDER BY movie_id`
         );

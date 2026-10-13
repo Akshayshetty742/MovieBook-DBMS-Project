@@ -19,14 +19,21 @@ graph TD
         API_Shows["/api/shows"]
         API_Seats["/api/seats"]
         API_Bookings["/api/bookings"]
+        API_Auth["/api/auth/*"]
+        API_Watchlist["/api/watchlist"]
+        API_Recommendations["/api/recommendations"]
         DB_Pool["lib/db.js (mysql2 connection pool)"]
+        Neo4jDriver["lib/neo4j.js (Neo4j driver)"]
     end
 
-    subgraph Database Tier [Storage & Engine - MySQL Server]
+    subgraph mysqlTier["MySQL - Relational Database"]
         MySQL[(movie_booking_db)]
-        Tables[(users, movies, shows, seats, bookings, booking_seats, payments)]
+        Tables[(Core tables + user_sessions + movie_watchlist)]
         Views[(movie_show_details, booking_summary, payment_report)]
         Triggers[(check_booking_amount)]
+    end
+    subgraph graphTier["Neo4j Desktop - Graph Database"]
+        Neo4j[(MovieBookDB / neo4j)]
     end
 
     UI --> Router
@@ -34,19 +41,28 @@ graph TD
     Router --> API_Shows
     Router --> API_Seats
     Router --> API_Bookings
+    Router --> API_Auth
+    Router --> API_Watchlist
+    Router --> API_Recommendations
     API_Movies --> DB_Pool
     API_Shows --> DB_Pool
     API_Seats --> DB_Pool
     API_Bookings --> DB_Pool
+    API_Auth --> DB_Pool
+    API_Watchlist --> DB_Pool
+    API_Recommendations --> DB_Pool
+    API_Recommendations --> Neo4jDriver
     DB_Pool --> MySQL
+    Neo4jDriver --> Neo4j
+    API_Recommendations --> MySQL
     MySQL --- Tables
     MySQL --- Views
     MySQL --- Triggers
 ```
 
-1. **Client Tier**: Single-page application built with React and Next.js (`app/page.js`), styled with pure CSS tokens (`app/globals.css`). It maintains user UI state, manages seat selections, and communicates with backend API routes via `fetch`.
-2. **Application Tier**: Next.js App Router API handlers running on Node.js. It manages connection pooling via `mysql2/promise` (`lib/db.js`), sanitizes inputs, enforces server-side business rules, and manages atomic transactions.
-3. **Database Tier**: MySQL 8.x storing relational tables, maintaining referential constraints, providing row-level locking (`SELECT ... FOR UPDATE`), and enforcing integrity via foreign keys and triggers.
+1. **Client Tier**: Multi-page Next.js App Router UI, styled with `app/globals.css`. Client components handle discovery controls, seat selection, and the booking-review step; protected page routes and API handlers validate the customer session server-side.
+2. **Application Tier**: Next.js Node.js route handlers use `mysql2/promise` (`lib/db.js`) for transactional relational operations and `neo4j-driver` (`lib/neo4j.js`) for graph suggestions. Booking ownership comes from the authenticated session, not a client-supplied user ID or a first-row fallback.
+3. **Storage Tier**: MySQL is authoritative for customers, movies, shows, seats, bookings, simulated payments, sessions, and Watchlists. Neo4j provides recommendation relationships; recommendation availability does not gate MySQL booking operations.
 
 ---
 
@@ -58,11 +74,11 @@ The sequence diagram below details the entire transactional booking flow, includ
 sequenceDiagram
     autonumber
     actor Patron as User / Browser
-    participant Client as React Client (app/page.js)
+    participant Client as Next.js booking UI
     participant API as Bookings API (POST /api/bookings)
     participant DB as MySQL Connection (lib/db.js)
 
-    Patron->>Client: Clicks "Book Now" on movie
+    Patron->>Client: Selects movie and showtime
     Client->>API: GET /api/shows
     API->>DB: Query shows joined with movie, screen & theatre
     DB-->>API: Returns show list
@@ -75,13 +91,15 @@ sequenceDiagram
     API-->>Client: Returns JSON { seats: [...] }
     Client->>Patron: Displays interactive Seat Map
 
-    Patron->>Client: Selects seats & clicks "Confirm Booking"
+    Patron->>Client: Selects seats and continues to booking review
     Note over Client: Enforces max 10 seats limit
+    Client->>Patron: Shows movie, showtime, seats, quantity and total
+    Patron->>Client: Confirms simulated payment and booking
     Client->>API: POST /api/bookings { show_id, seat_ids: [...] }
 
     Note over API: Begins Database Transaction
     API->>DB: connection.beginTransaction()
-    API->>DB: SELECT user_id FROM users LIMIT 1
+    API->>DB: Validate cookie-backed user session
     API->>DB: SELECT screen_id, price FROM shows WHERE show_id = ?
     API->>DB: SELECT seat_id FROM seats WHERE screen_id = ? AND seat_id IN (...) FOR UPDATE
     
@@ -95,7 +113,7 @@ sequenceDiagram
         Client->>Patron: Displays error banner & refreshes seat map
     else If all seats are available
         Note over API: Recalculates total = price * seat_count
-        API->>DB: INSERT INTO bookings (user_id, show_id, total_amount, 'CONFIRMED')
+        API->>DB: INSERT INTO bookings (session user_id, show_id, total_amount, 'CONFIRMED')
         API->>DB: INSERT INTO booking_seats (booking_id, show_id, seat_id) [for each seat]
         API->>DB: INSERT INTO payments (booking_id, amount, 'UPI (DEMO)', 'SUCCESS')
         API->>DB: connection.commit()
